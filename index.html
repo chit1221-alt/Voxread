@@ -2241,6 +2241,80 @@ dependencies {
       }
     }
 
+    /* ---------- Share target intake ---------- */
+
+    const SHARE_CACHE = 'voxread-share';
+    const SHARE_KEY = 'shared-item';
+
+    function registerShareWorker() {
+      if (!('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.register('sw.js').catch((err) => {
+        console.warn('Share worker registration failed:', err);
+      });
+    }
+
+    // Android sometimes strips or mangles the extension. Fall back to the MIME type
+    // so processIncomingFile() dispatches to the right parser.
+    function ensureExtension(name, mime) {
+      const known = /\.(pdf|docx|zip|png|jpe?g|webp|bmp|json|md|txt|text|csv|log|rtf|tsv)$/i;
+      if (known.test(name)) return name;
+      const map = {
+        'application/pdf': '.pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'application/zip': '.zip',
+        'application/x-zip-compressed': '.zip',
+        'application/json': '.json',
+        'text/markdown': '.md',
+        'text/csv': '.csv',
+        'text/plain': '.txt',
+        'image/png': '.png',
+        'image/jpeg': '.jpg',
+        'image/webp': '.webp',
+        'image/bmp': '.bmp'
+      };
+      return name + (map[(mime || '').toLowerCase()] || '.txt');
+    }
+
+    async function consumeSharedItem() {
+      const params = new URLSearchParams(location.search);
+      const flag = params.get('shared');
+      if (!flag) return false;
+
+      // Clear the marker so a refresh doesn't re-trigger the import.
+      history.replaceState(null, '', location.pathname);
+
+      if (flag === 'error') {
+        showToast('Nothing readable was shared');
+        return false;
+      }
+
+      try {
+        const cache = await caches.open(SHARE_CACHE);
+        const res = await cache.match(SHARE_KEY);
+        if (!res) {
+          showToast('The shared item could not be found');
+          return false;
+        }
+
+        const blob = await res.blob();
+        const raw = res.headers.get('X-Share-Filename');
+        const mime = res.headers.get('Content-Type') || blob.type || '';
+        let name = raw ? decodeURIComponent(raw) : 'Shared file';
+        name = ensureExtension(name, mime);
+
+        await cache.delete(SHARE_KEY);
+
+        const file = new File([blob], name, { type: mime || 'application/octet-stream' });
+        if (window.innerWidth < 1024) setMobileSubTab('player');
+        await processIncomingFile(file);
+        return true;
+      } catch (err) {
+        console.error('Share intake failed:', err);
+        showToast('Could not open the shared file');
+        return false;
+      }
+    }
+
     window.addEventListener('load', () => {
       populateVoiceList();
       if (speechSynthesis.onvoiceschanged !== undefined) {
@@ -2259,8 +2333,15 @@ dependencies {
         readerArea.addEventListener('touchmove', handleUserScroll, { passive: true });
       }
 
-      loadSampleText('voyager');
+      registerShareWorker();
+
+      // A shared file wins; only fall back to the demo text when nothing was shared.
+      const incomingShare = new URLSearchParams(location.search).has('shared');
+      if (!incomingShare) {
+        loadSampleText('voyager');
+      }
       selectCodeFile('manifest');
+      consumeSharedItem();
     });
   </script>
 
